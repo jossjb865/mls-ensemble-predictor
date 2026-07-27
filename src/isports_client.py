@@ -5,41 +5,37 @@ Requiere API_KEY de isportsapi.com (plan Live Data o Stats)
 
 from __future__ import annotations
 
-import os
-import time
 import logging
-from typing import Dict, List, Optional, Any
+import os
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
 
+from .constants import BASE_URLS, STAT_TYPES, XG_PROXY_FACTOR
+from .exceptions import ConfigurationError, iSportsAPIError
+
 logger = logging.getLogger(__name__)
-
-BASE_URLS = [
-    "http://api.isportsapi.com",
-    "http://api2.isportsapi.com",
-]
-
-# Códigos de stats relevantes
-XG_TYPE = 52          # Expected goals — xG
-SHOTS_TYPE = 3
-SHOTS_ON_TARGET = 4
 
 
 class iSportsClient:
+    """Cliente para interactuar con iSportsAPI."""
+
     def __init__(self, api_key: Optional[str] = None, timeout: int = 30):
         self.api_key = api_key or os.getenv("ISPORTS_API_KEY")
         if not self.api_key:
-            raise ValueError(
+            raise ConfigurationError(
                 "ISPORTS_API_KEY no configurada. "
                 "Exporta la variable o pásala al constructor."
             )
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "MLS-Ensemble/1.0"})
+        logger.info("iSportsClient initialized")
 
-    def _get(self, path: str, params: Optional[Dict] = None) -> Dict:
+    def _get(self, path: str, params: Optional[Dict] = None) -> Dict[str, Any]:
+        """Realiza petición GET a la API con fallback entre servidores."""
         params = params or {}
         params["api_key"] = self.api_key
 
@@ -53,44 +49,51 @@ class iSportsClient:
                 if data.get("code") == 0:
                     return data
                 last_error = data.get("message", "Unknown error")
-            except Exception as e:
+            except requests.RequestException as e:
                 last_error = str(e)
+                logger.debug(f"Failed to fetch from {url}: {e}")
                 continue
-        raise RuntimeError(f"iSportsAPI error: {last_error}")
+        
+        raise iSportsAPIError(f"iSportsAPI error: {last_error}")
 
     def find_mls_league_id(self) -> str:
         """Busca el leagueId de Major League Soccer."""
+        logger.info("Searching for MLS league ID...")
         data = self._get("/sport/football/league/basic")
         leagues = data.get("data", [])
+        
         for lg in leagues:
             name = (lg.get("name") or "").lower()
             short = (lg.get("shortName") or "").lower()
             if "major league soccer" in name or short in ("mls", "usa mls", "usa major"):
                 league_id = str(lg["leagueId"])
-                logger.info(f"MLS leagueId encontrado: {league_id}")
+                logger.info(f"MLS leagueId found: {league_id}")
                 return league_id
-        raise ValueError(
-            "No se encontró Major League Soccer. "
-            "Revisa la lista de ligas o pasa league_id manualmente."
+        
+        raise iSportsAPIError(
+            "MLS not found. Check the leagues list or pass league_id manually."
         )
 
-    def get_standings(self, league_id: str) -> List[Dict]:
-        """Standing de la liga (gf, ga, matches, points)."""
+    def get_standings(self, league_id: str) -> List[Dict[str, Any]]:
+        """Obtiene standings de la liga (gf, ga, matches, points)."""
+        logger.info(f"Fetching standings for league {league_id}...")
         data = self._get(
             "/sport/football/standing/league",
-            {"leagueId": league_id}
+            {"leagueId": league_id},
         )
-        # La estructura puede variar según sub-ligas; normalizamos
+        
         result = []
         raw = data.get("data", {})
-        # Algunos planes devuelven lista directa, otros anidada
+        
+        # Normalizar estructura de respuesta (puede variar según plan de API)
         items = raw if isinstance(raw, list) else raw.get("scoreItems", raw.get("total", []))
         if not items and isinstance(raw, dict):
-            # Intentar subLeague
+            # Intentar extraer de subLeague si existe
             for key in raw:
                 if isinstance(raw[key], list):
                     items = raw[key]
                     break
+        
         for row in items or []:
             result.append({
                 "teamId": str(row.get("teamId", "")),
@@ -101,24 +104,34 @@ class iSportsClient:
                 "points": int(row.get("integral") or row.get("points") or 0),
                 "rank": int(row.get("rank") or 0),
             })
+        
+        logger.info(f"Standings retrieved for {len(result)} teams")
         return result
 
-    def get_schedule(self, league_id: str, season: Optional[str] = None) -> List[Dict]:
-        """Fixtures + resultados (últimos partidos para forma)."""
-        params = {"leagueId": league_id}
+    def get_schedule(self, league_id: str, season: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Obtiene fixtures y resultados (útil para calcular forma reciente)."""
+        logger.info(f"Fetching schedule for league {league_id}...")
+        params: Dict[str, Any] = {"leagueId": league_id}
         if season:
             params["season"] = season
+        
         data = self._get("/sport/football/schedule", params)
         matches = data.get("data", [])
         return matches if isinstance(matches, list) else []
 
-    def get_match_stats(self, date: Optional[str] = None, match_id: Optional[str] = None) -> List[Dict]:
-        """Stats del día (incluye xG type=52). Limitado a ~1 mes."""
-        params = {}
+    def get_match_stats(
+        self,
+        date: Optional[str] = None,
+        match_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Obtiene stats del día (incluye xG type=52). Limitado a ~1 mes."""
+        logger.info("Fetching match stats...")
+        params: Dict[str, Any] = {}
         if date:
             params["date"] = date
         if match_id:
             params["matchId"] = match_id
+        
         data = self._get("/sport/football/stats", params)
         return data.get("data", [])
 
@@ -126,7 +139,7 @@ class iSportsClient:
         self,
         league_id: Optional[str] = None,
         season: Optional[str] = None,
-        output_csv: str = "data/mls_isports_stats.csv"
+        output_csv: str = "data/mls_isports_stats.csv",
     ) -> pd.DataFrame:
         """
         Construye el DataFrame exacto que necesita el Ensemble:
@@ -135,22 +148,25 @@ class iSportsClient:
         if league_id is None:
             league_id = self.find_mls_league_id()
 
-        logger.info(f"Extrayendo standings MLS (leagueId={league_id})...")
+        logger.info(f"Building ensemble dataset (leagueId={league_id})...")
         standings = self.get_standings(league_id)
 
+        if not standings:
+            raise iSportsAPIError("No teams retrieved from standings")
+
         # Agregar xG aproximado desde stats recientes (si el plan lo permite)
-        # Nota: el endpoint /stats es principalmente live/día; 
-        # para xG de temporada se recomienda acumular históricos o usar otra fuente.
+        # Nota: el endpoint /stats es principalmente live/día;
+        # para xG de temporada se recomienda acumular históricos.
         xg_map: Dict[str, float] = {}
 
-        # Fallback: si no hay xG real, usamos gf * 0.95 como proxy
         rows = []
         for s in standings:
             team = s["team"]
             gf = s["gf"]
             ga = s["ga"]
             matches = max(1, s["matches"])
-            xg = xg_map.get(team, round(gf * 0.95, 1))  # proxy si no hay data
+            # Fallback: si no hay xG real, usamos gf * proxy como aproximación
+            xg = xg_map.get(team, round(gf * XG_PROXY_FACTOR, 1))
             rows.append({
                 "team": team,
                 "gf": gf,
@@ -163,30 +179,34 @@ class iSportsClient:
             })
 
         df = pd.DataFrame(rows)
-        if df.empty:
-            raise RuntimeError("No se obtuvieron equipos de standings")
-
         Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(output_csv, index=False)
-        logger.info(f"Dataset guardado en {output_csv} ({len(df)} equipos)")
+        logger.info(f"Dataset saved to {output_csv} ({len(df)} teams)")
         return df
 
 
 def fetch_mls_for_ensemble(
     api_key: str,
     league_id: Optional[str] = None,
-    output_csv: str = "data/mls_isports_stats.csv"
+    output_csv: str = "data/mls_isports_stats.csv",
 ) -> pd.DataFrame:
-    """Función de conveniencia."""
+    """Función de conveniencia para obtener datos MLS para el ensemble."""
     client = iSportsClient(api_key=api_key)
     return client.build_ensemble_dataset(league_id=league_id, output_csv=output_csv)
 
 
 if __name__ == "__main__":
     import sys
+    
     key = os.getenv("ISPORTS_API_KEY")
     if not key:
-        print("Exporta ISPORTS_API_KEY=tu_clave")
+        print("Set ISPORTS_API_KEY environment variable")
         sys.exit(1)
-    df = fetch_mls_for_ensemble(key)
-    print(df.head(10).to_string())
+    
+    try:
+        df = fetch_mls_for_ensemble(key)
+        print("\nTop 10 teams:")
+        print(df.head(10).to_string())
+    except iSportsAPIError as e:
+        print(f"API Error: {e}")
+        sys.exit(1)

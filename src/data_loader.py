@@ -4,49 +4,78 @@ Data loading and validation utilities for MLS Ensemble Predictor
 
 from __future__ import annotations
 
-import pandas as pd
+import logging
 from pathlib import Path
 from typing import Union
-import logging
 
-logging.basicConfig(level=logging.INFO)
+import pandas as pd
+
+from .constants import (
+    REQUIRED_COLUMNS,
+    OPTIONAL_COLUMNS,
+    XG_WEIGHT,
+    GF_WEIGHT,
+    XG_PROXY_FACTOR,
+)
+from .exceptions import DataValidationError
+
 logger = logging.getLogger(__name__)
 
 
-REQUIRED_COLUMNS = {"team", "gf", "ga", "matches"}
+class DataValidator:
+    """Centraliza la validación de datos del ensemble."""
+
+    @staticmethod
+    def validate_columns(df: pd.DataFrame) -> None:
+        """Valida que el DataFrame tenga las columnas requeridas."""
+        missing = REQUIRED_COLUMNS - set(df.columns)
+        if missing:
+            raise DataValidationError(f"Missing required columns: {missing}")
+
+    @staticmethod
+    def normalize_types(df: pd.DataFrame) -> pd.DataFrame:
+        """Normaliza los tipos de datos del DataFrame."""
+        df = df.copy()
+        df["team"] = df["team"].astype(str).str.strip()
+        df["gf"] = pd.to_numeric(df["gf"], errors="coerce").fillna(0).astype(int)
+        df["ga"] = pd.to_numeric(df["ga"], errors="coerce").fillna(0).astype(int)
+        df["matches"] = pd.to_numeric(df["matches"], errors="coerce").fillna(1).clip(lower=1).astype(int)
+
+        if "xg" in df.columns:
+            df["xg"] = pd.to_numeric(df["xg"], errors="coerce")
+
+        return df
+
+    @staticmethod
+    def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
+        """Elimina duplicados manteniendo el último registro de cada equipo."""
+        return df.drop_duplicates(subset=["team"], keep="last")
 
 
 def validate_stats(df: pd.DataFrame) -> pd.DataFrame:
-    missing = REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    df = df.copy()
-    df["team"] = df["team"].astype(str).str.strip()
-    df["gf"] = pd.to_numeric(df["gf"], errors="coerce").fillna(0).astype(int)
-    df["ga"] = pd.to_numeric(df["ga"], errors="coerce").fillna(0).astype(int)
-    df["matches"] = pd.to_numeric(df["matches"], errors="coerce").fillna(1).clip(lower=1).astype(int)
-
-    if "xg" in df.columns:
-        df["xg"] = pd.to_numeric(df["xg"], errors="coerce")
-
-    df = df.drop_duplicates(subset=["team"], keep="last")
+    """Valida y normaliza estadísticas del DataFrame."""
+    validator = DataValidator()
+    validator.validate_columns(df)
+    df = validator.normalize_types(df)
+    df = validator.remove_duplicates(df)
     logger.info(f"Validated {len(df)} teams")
     return df
 
 
 def load_mls_data(source: Union[str, Path, pd.DataFrame]) -> pd.DataFrame:
+    """Carga datos MLS desde archivo CSV o DataFrame."""
     if isinstance(source, pd.DataFrame):
         df = source
     else:
         path = Path(source)
         if not path.exists():
-            raise FileNotFoundError(f"Data file not found: {path}")
+            raise DataValidationError(f"Data file not found: {path}")
         df = pd.read_csv(path)
     return validate_stats(df)
 
 
 def create_sample_mls_csv(output_path: Union[str, Path] = "data/sample_mls_stats.csv") -> Path:
+    """Genera un CSV de ejemplo con estadísticas MLS."""
     sample = {
         "team": [
             "Inter Miami CF", "LA Galaxy", "Columbus Crew", "FC Cincinnati",
