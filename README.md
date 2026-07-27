@@ -1,6 +1,6 @@
 # MLS Ensemble Football Predictor
 
-Sistema de Machine Learning listo para predicciones de la **Major League Soccer (MLS)** usando un ensemble de modelos:
+Sistema de Machine Learning listo para predicciones de la **Major League Soccer (MLS)** usando un ensemble de modelos con **datos en tiempo real desde iSportsAPI**:
 
 | Modelo | Peso | Descripción |
 |--------|------|-------------|
@@ -11,42 +11,92 @@ Sistema de Machine Learning listo para predicciones de la **Major League Soccer 
 
 **Salidas**: Probabilidades 1X2, Over/Under 2.5, BTTS, marcador más probable y lambdas de goles.
 
-## Mejoras en v1.0.1 (Refactorización)
+## 🚀 Inicio Rápido
 
-- ✅ **Módulo de constantes**: Centralización de parámetros mágicos en `constants.py`
-- ✅ **Excepciones personalizadas**: Sistema de errores robusto en `exceptions.py`
-- ✅ **Validador de datos**: Clase `DataValidator` que elimina duplicación
-- ✅ **Procesador de estadísticas**: Clase `StatsProcessor` para cálculos de forma
-- ✅ **Cache de matrices Poisson**: Mejora de rendimiento
-- ✅ **Integración iSportsAPI**: Flujo mejorado con manejo de errores
-- ✅ **Logging estruturado**: Trazabilidad completa de ejecución
-- ✅ **CLI mejorada**: Soporte para múltiples modos (predicción, batch, iSportsAPI)
-- ✅ **Type hints completos**: Mejora de legibilidad y verificación estática
-- ✅ **Eliminación de código duplicado**: Máxima reutilización
+### 1. Configurar API Key (Solo si usas local)
 
-## Requisitos
-
+**Local:**
 ```bash
-pip install -r requirements.txt
+export ISPORTS_API_KEY="tu_clave_aqui"
 ```
 
-## Uso
+**GitHub Actions:**
+- Ya está configurada en repository secrets como `ISPORTS_API_KEY`
+- El código la obtiene automáticamente
 
-### Generar datos de ejemplo
+### 2. Obtener datos en vivo
 
 ```bash
-python main.py --generate-sample
+python main.py --fetch-isports
 ```
 
-### Predicción individual
+Esto:
+- ✅ Busca automáticamente la liga MLS en iSportsAPI
+- ✅ Obtiene standings actualizados (goles, partidos jugados, etc.)
+- ✅ Extrae xG de los últimos 7 días de matches
+- ✅ Cachea los datos para no agotar cuota de API
+- ✅ Guarda todo en `data/mls_isports_stats.csv`
 
+### 3. Realizar predicción
+
+**Usando datos en vivo (intenta iSportsAPI automáticamente):**
+```bash
+python main.py --home "Inter Miami CF" --away "LA Galaxy"
+```
+
+**Con datos custom:**
+```bash
+python main.py --data data/mls_isports_stats.csv --home "Inter Miami CF" --away "LA Galaxy"
+```
+
+## 📊 Características de Integración iSportsAPI
+
+### Datos Automáticamente Extraídos
+
+| Dato | Fuente | Uso |
+|------|--------|-----|
+| **Goles a favor/en contra** | Standings API | Cálculo de ataque/defensa |
+| **Partidos jugados** | Standings API | Normalización de métricas |
+| **Expected Goals (xG)** | Match Stats API (últimos 7 días) | Mejora de precisión del ataque |
+| **Puntos** | Standings API | Metadata para análisis |
+| **Ranking** | Standings API | Validación de datos |
+
+### Caché Inteligente
+
+- **Duración**: 60 minutos
+- **Beneficio**: Evita múltiples llamadas innecesarias a la API
+- **Control**: Usa `--refresh` para forzar actualización
+
+```bash
+# Usar cache (por defecto)
+python main.py --fetch-isports
+
+# Forzar actualización
+python main.py --fetch-isports --refresh
+```
+
+### Manejo Robusto de Errores
+
+- ✅ Usa automáticamente ISPORTS_API_KEY del environment
+- ✅ Fallback automático a datos de ejemplo si API_KEY no está configurada
+- ✅ Retry automático entre múltiples servidores de iSportsAPI
+- ✅ Logs detallados para debugging
+- ✅ Mensajes claros sobre qué salió mal
+
+```bash
+# Debug detallado
+python main.py --debug --fetch-isports
+```
+
+## 📋 Ejemplos de Uso
+
+### Predicción Individual
 ```bash
 python main.py --home "Inter Miami CF" --away "LA Galaxy" \
   --form-home 0.70 --form-away 0.45
 ```
 
-### Predicción en batch
-
+### Predicción en Batch
 ```bash
 python main.py --batch fixtures.json --output predictions.json
 ```
@@ -58,52 +108,69 @@ Estructura de `fixtures.json`:
     "home": "Inter Miami CF",
     "away": "LA Galaxy",
     "form_home": 0.70,
-    "form_away": 0.45,
-    "momentum_home": 0.55,
-    "momentum_away": 0.40
+    "form_away": 0.45
+  },
+  {
+    "home": "Columbus Crew",
+    "away": "FC Cincinnati",
+    "form_home": 0.60,
+    "form_away": 0.40
   }
 ]
 ```
 
-### Obtener datos desde iSportsAPI
-
-Primero, configura tu API key:
-
+### Datos de Ejemplo (sin API Key)
 ```bash
-export ISPORTS_API_KEY="tu_clave_aqui"
+python main.py --generate-sample
+python main.py --data data/sample_mls_stats.csv --home "Inter Miami CF" --away "LA Galaxy"
 ```
 
-Luego obtén los datos:
+## 🔄 Flujo Automático de Datos
 
-```bash
-python main.py --fetch-isports
+```
+python main.py --home Team1 --away Team2
+        ↓
+¿Existe data/mls_isports_stats.csv?
+        ├─ Si → Usar archivo existente
+        └─ No ↓
+         ¿ISPORTS_API_KEY configurada?
+         ├─ Si → Conectar iSportsAPI
+         │       ├─ Buscar MLS League ID
+         │       ├─ Obtener Standings
+         │       ├─ Extraer xG
+         │       └─ Guardar CSV
+         └─ No → Generar datos de ejemplo
+        ↓
+Cargar datos → Calcular métricas
+        ↓
+Ensemble (Poisson + XGBoost + CatBoost + LSTM)
+        ↓
+Salida JSON con predicciones
 ```
 
-## Estructura de datos
+## 📦 Estructura de Datos CSV
 
-### CSV de entrada
+### Archivo de entrada: `data/mls_isports_stats.csv`
 
-Archivo: `data/sample_mls_stats.csv`
-
+**Obtenido automáticamente de iSportsAPI:**
 ```csv
-team,gf,ga,matches,xg
-Inter Miami CF,62,38,28,58.2
-LA Galaxy,58,42,28,55.1
+team,gf,ga,matches,xg,points,rank,teamId
+Inter Miami CF,62,38,28,58.2,82,1,12345
+LA Galaxy,58,42,28,55.1,79,2,12346
+Columbus Crew,55,35,28,52.4,76,3,12347
 ```
 
-**Columnas requeridas**:
+**Columnas:**
 - `team`: Nombre del equipo (string)
-- `gf`: Goles a favor (int)
-- `ga`: Goles en contra (int)
-- `matches`: Partidos jugados (int)
+- `gf`: Goles a favor (int) - de standings
+- `ga`: Goles en contra (int) - de standings  
+- `matches`: Partidos jugados (int) - de standings
+- `xg`: Expected Goals (float) - extraído de match stats últimos 7 días
+- `points`: Puntos acumulados (int) - de standings
+- `rank`: Posición en liga (int) - de standings
+- `teamId`: ID en iSportsAPI (string) - para validación
 
-**Columnas opcionales**:
-- `xg`: Expected goals (float) - mejora la precisión del modelo
-- `points`: Puntos acumulados
-- `rank`: Clasificación
-- `teamId`: ID del equipo en iSportsAPI
-
-### Salida de predicción
+### Salida de predicción: `predictions.json`
 
 ```json
 {
@@ -132,73 +199,151 @@ LA Galaxy,58,42,28,55.1
 }
 ```
 
-## Arquitectura
+## 🔧 Configuración Avanzada
+
+### Variables de Entorno
+
+```bash
+# Requerida para datos en vivo
+export ISPORTS_API_KEY="tu_clave_de_isportsapi"
+
+# Opcional: customize timeouts
+export ISPORTS_TIMEOUT="60"  # segundos
+```
+
+### Parámetros de Predicción
+
+```python
+from src.ensemble import EnsembleFootballPredictor
+
+model = EnsembleFootballPredictor(
+    home_advantage=1.18,      # Factor de ventaja de local
+    max_goals=8,              # Máximo goles para matriz Poisson
+    league_avg_goals=2.75     # Promedio de goles de la liga
+)
+```
+
+### Forma y Momentum
+
+```bash
+# form: 0.0-1.0 (0=muy mala forma, 1=forma excelente)
+# momentum: 0.0-1.0 (0=perdiendo últimos partidos, 1=ganando)
+
+python main.py \
+  --home "Inter Miami CF" --away "LA Galaxy" \
+  --form-home 0.70 --form-away 0.45 \
+  --momentum-home 0.60 --momentum-away 0.35
+```
+
+## 🏗️ Arquitectura
 
 ```
 src/
-  __init__.py           Exports públicos
-  constants.py          Parámetros centralizados
-  exceptions.py         Excepciones personalizadas
-  data_loader.py        Carga y validación de datos
-  ensemble.py           Modelo ensemble principal
-  isports_client.py     Cliente para iSportsAPI
-  predict.py            CLI y entrypoint
+  __init__.py              Package exports
+  constants.py             Parámetros centralizados
+  exceptions.py            Excepciones personalizadas
+  data_loader.py           Carga y validación de datos
+  ensemble.py              Modelo ensemble principal
+  isports_client.py        Cliente iSportsAPI (MEJORADO)
+  predict.py               CLI y entrypoint (MEJORADO)
   
-main.py                 Wrapper de entrypoint
-requirements.txt        Dependencias
+main.py                    Wrapper
+requirements.txt           Dependencias
+README.md                  Documentación
 ```
 
-## Flujo de datos
+## 📝 GitHub Actions Integration
 
+### Configuración Automática
+
+La API key se obtiene automáticamente desde el environment en GitHub Actions:
+
+```yaml
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      
+      # La API key se pasa automáticamente
+      - name: Fetch data from iSportsAPI
+        run: python main.py --fetch-isports
+      
+      - name: Run predictions
+        run: |
+          python main.py --batch fixtures.json --output predictions.json
 ```
-Datos (CSV o iSportsAPI)
-         ↓
-  DataValidator
-         ↓
- StatsProcessor (ataque, defensa, xG ajustado)
-         ↓
-EnsembleFootballPredictor.ingest_data()
-         ↓
-Submodelos:
-  ├─ Poisson (25%)
-  ├─ XGBoost-sim (30%)
-  ├─ CatBoost-sim (25%)
-  └─ LSTM-sim (20%)
-         ↓
- Combinación ponderada → lambdas finales
-         ↓
-Matriz de Poisson → probabilidades 1X2, Over/Under, BTTS, etc.
+
+Gracias a la integración, **no es necesario exportar manualmente la variable**. El código la obtiene directamente.
+
+### Workflow de Ejemplo
+
+```yaml
+name: MLS Predictions
+on:
+  schedule:
+    - cron: '0 9 * * SAT'  # Cada sábado a las 9 AM
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - run: pip install -r requirements.txt
+      
+      # fetch_mls_for_ensemble() detecta ISPORTS_API_KEY automáticamente
+      - name: Fetch data from iSportsAPI
+        run: python main.py --fetch-isports
+      
+      - name: Run batch predictions
+        run: python main.py --batch fixtures.json --output predictions.json
+      
+      - name: Upload predictions
+        uses: actions/upload-artifact@v3
+        with:
+          name: predictions
+          path: predictions.json
 ```
 
-## Parámetros ajustables
+## 🐛 Troubleshooting
 
-- **form_home / form_away** (0.0-1.0): Forma actual del equipo
-- **momentum_home / momentum_away** (0.0-1.0): Momentum reciente
-- **hierarchy** (1.0+): Multiplicador de ventaja local (default=1.0)
-- **home_advantage** (default=1.18): Factor de ventaja de local
-- **league_avg_goals** (default=2.75): Promedio de goles de la liga
+### Error: "ISPORTS_API_KEY not configured"
 
-## Desarrollo
+**Local:**
+```bash
+export ISPORTS_API_KEY="tu_clave"
+python main.py --fetch-isports
+```
 
-### Agregar un nuevo modelo
+**GitHub Actions:**
+Verifica que el secret esté en `Settings → Secrets and variables → Actions`
 
-1. Crear método `_simulate_<modelo>()` en `EnsembleFootballPredictor`
-2. Agregar peso en `ENSEMBLE_WEIGHTS` en `constants.py`
-3. Integrar en el método `predict()`
+### Error: "MLS not found"
 
-### Agregar constantes nuevas
+**Causas:**
+- API key sin acceso a datos de MLS
+- API key expirada o inválida
 
-Siempre centralizar en `src/constants.py` usando `Final` para inmutabilidad.
+**Solución:**
+```bash
+python main.py --debug --fetch-isports  # Ver logs detallados
+```
 
-### Tests
-
-Para ejecutar con datos de ejemplo:
+### Cache desactualizado
 
 ```bash
-python main.py --generate-sample
-python main.py --home "Inter Miami CF" --away "LA Galaxy"
+python main.py --fetch-isports --refresh  # Forzar actualización
 ```
 
-## Licencia
+## 📄 Licencia
 
 MIT

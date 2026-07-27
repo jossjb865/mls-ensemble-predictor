@@ -7,15 +7,18 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_loader import create_sample_mls_csv, load_mls_data
 from src.ensemble import EnsembleFootballPredictor
-from src.exceptions import EnsembleError
+from src.exceptions import ConfigurationError, EnsembleError, iSportsAPIError
 from src.isports_client import fetch_mls_for_ensemble
 
 logger = logging.getLogger(__name__)
@@ -62,7 +65,7 @@ def run_prediction(
 def run_batch(
     data_path: str,
     fixtures: List[Dict],
-    output_file: str | None = None,
+    output_file: Optional[str] = None,
 ) -> List[Dict]:
     """Ejecuta predicciones en batch."""
     logger.info(f"Running batch predictions for {len(fixtures)} fixtures")
@@ -86,29 +89,80 @@ def run_batch(
 
 def fetch_from_isports(
     output_csv: str = "data/mls_isports_stats.csv",
-) -> None:
-    """Obtiene datos directamente desde iSportsAPI."""
-    logger.info("Fetching data from iSportsAPI...")
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """Obtiene datos directamente desde iSportsAPI usando la API key del environment."""
+    logger.info("Fetching real MLS data from iSportsAPI...")
     
     try:
-        df = fetch_mls_for_ensemble(output_csv=output_csv)
+        # fetch_mls_for_ensemble usará automáticamente ISPORTS_API_KEY del environment
+        df = fetch_mls_for_ensemble(
+            api_key=None,  # None = usa env var ISPORTS_API_KEY
+            output_csv=output_csv,
+            use_cache=not force_refresh,
+        )
         logger.info(f"Successfully fetched {len(df)} teams from iSportsAPI")
-        print(f"\nData saved to {output_csv}")
-        print(f"\nTop 10 teams:")
-        print(df.head(10).to_string())
-    except Exception as e:
-        logger.error(f"Error fetching from iSportsAPI: {e}")
+        print(f"\n✅ Data successfully fetched and saved to {output_csv}")
+        print(f"\n📊 Top 10 teams by goals scored:")
+        print(df.nlargest(10, 'gf')[['team', 'gf', 'ga', 'matches', 'xg']].to_string(index=False))
+        return df
+    except ConfigurationError as e:
+        logger.error(f"Configuration error: {e}")
+        print(f"\n❌ Configuration Error: {e}")
+        print("\n💡 To fix this:")
+        print("   1. Local: export ISPORTS_API_KEY='your_key'")
+        print("   2. GitHub: Add 'ISPORTS_API_KEY' as a repository secret")
         raise
+    except iSportsAPIError as e:
+        logger.error(f"API error fetching from iSportsAPI: {e}")
+        print(f"\n❌ API Error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error fetching from iSportsAPI: {e}")
+        print(f"\n❌ Error: {e}")
+        raise
+
+
+def ensure_data_exists(
+    data_path: str,
+    try_isports: bool = True,
+) -> str:
+    """Asegura que exista archivo de datos, intentando iSportsAPI primero."""
+    path = Path(data_path)
+    
+    if path.exists():
+        logger.info(f"Data file exists: {data_path}")
+        return str(path)
+    
+    logger.warning(f"Data file not found: {data_path}")
+    
+    # Intentar obtener datos de iSportsAPI si se configuró
+    if try_isports and os.getenv("ISPORTS_API_KEY"):
+        logger.info("Attempting to fetch from iSportsAPI...")
+        try:
+            fetch_from_isports(output_csv=data_path, force_refresh=False)
+            logger.info("Successfully fetched data from iSportsAPI")
+            return str(path)
+        except (ConfigurationError, iSportsAPIError) as e:
+            logger.warning(f"Could not fetch from iSportsAPI: {e}. Using sample data instead.")
+    
+    # Fallback: generar datos de ejemplo
+    logger.info(f"Generating sample data at {data_path}...")
+    create_sample_mls_csv(data_path)
+    print(f"\n⚠️  Generated sample data at {data_path}")
+    print("   For real predictions, use: python main.py --fetch-isports")
+    
+    return str(path)
 
 
 def main() -> None:
     """Punto de entrada principal de la CLI."""
     parser = argparse.ArgumentParser(
-        description="MLS Ensemble Football Predictor",
+        description="MLS Ensemble Football Predictor - Real-time predictions powered by iSportsAPI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single prediction
+  # Single prediction (auto-fetches from iSportsAPI if configured)
   python main.py --home "Inter Miami CF" --away "LA Galaxy"
   
   # Batch predictions
@@ -117,8 +171,14 @@ Examples:
   # Generate sample data
   python main.py --generate-sample
   
-  # Fetch from iSportsAPI
+  # Fetch fresh data from iSportsAPI
   python main.py --fetch-isports
+  
+  # Use specific data file
+  python main.py --data custom_data.csv --home "Inter Miami CF" --away "LA Galaxy"
+  
+Configuration:
+  ISPORTS_API_KEY environment variable or GitHub repository secret
         """,
     )
     
@@ -132,36 +192,72 @@ Examples:
     parser.add_argument("--hierarchy", type=float, default=1.0, help="Home team hierarchy multiplier")
     
     # Datos
-    parser.add_argument("--data", type=str, default="data/sample_mls_stats.csv", help="Path to data CSV")
+    parser.add_argument(
+        "--data",
+        type=str,
+        default="data/mls_isports_stats.csv",
+        help="Path to data CSV (tries iSportsAPI first if missing)",
+    )
     
     # Generación de datos
-    parser.add_argument("--generate-sample", action="store_true", help="Generate sample data and exit")
-    parser.add_argument("--fetch-isports", action="store_true", help="Fetch data from iSportsAPI and exit")
+    parser.add_argument(
+        "--generate-sample",
+        action="store_true",
+        help="Generate sample data and exit",
+    )
+    parser.add_argument(
+        "--fetch-isports",
+        action="store_true",
+        help="Fetch real data from iSportsAPI (requires ISPORTS_API_KEY)",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Ignore cache when fetching from iSportsAPI",
+    )
     
     # Batch
     parser.add_argument("--batch", type=str, default=None, help="Path to batch fixtures JSON")
     parser.add_argument("--output", type=str, default=None, help="Output file for predictions")
     
+    # Debug
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
+    
     args = parser.parse_args()
+    
+    # Configurar logging
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("Debug mode enabled")
 
     try:
         # Generar datos de ejemplo
         if args.generate_sample:
             logger.info(f"Generating sample data at {args.data}...")
             create_sample_mls_csv(args.data)
-            print(f"Sample data created at {args.data}")
+            print(f"✅ Sample data created at {args.data}")
             return
 
         # Obtener datos de iSportsAPI
         if args.fetch_isports:
-            fetch_from_isports(output_csv=args.data)
+            try:
+                fetch_from_isports(
+                    output_csv=args.data,
+                    force_refresh=args.refresh,
+                )
+                print("✅ Ready for predictions with real MLS data!\n")
+                print(f"   python main.py --data {args.data} --home 'Inter Miami CF' --away 'LA Galaxy'")
+            except (ConfigurationError, iSportsAPIError) as e:
+                logger.error(f"Failed to fetch from iSportsAPI: {e}")
+                sys.exit(1)
             return
 
-        # Validar que exista archivo de datos
-        data_path = Path(args.data)
-        if not data_path.exists():
-            logger.warning(f"Data file not found: {data_path}. Generating sample...")
-            create_sample_mls_csv(data_path)
+        # Asegurar que exista datos (intenta iSportsAPI primero)
+        data_path = ensure_data_exists(args.data, try_isports=True)
 
         # Predicción en batch
         if args.batch:
@@ -170,7 +266,7 @@ Examples:
                 logger.error(f"Batch file not found: {batch_path}")
                 sys.exit(1)
             fixtures = json.loads(batch_path.read_text())
-            run_batch(str(data_path), fixtures, args.output)
+            run_batch(data_path, fixtures, args.output)
             return
 
         # Predicción individual
@@ -178,7 +274,7 @@ Examples:
             parser.error("--home and --away are required (or use --batch / --generate-sample / --fetch-isports)")
 
         run_prediction(
-            data_path=str(data_path),
+            data_path=data_path,
             home=args.home,
             away=args.away,
             form_home=args.form_home,
@@ -190,8 +286,13 @@ Examples:
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(0)
+    except (ConfigurationError, iSportsAPIError) as e:
+        logger.error(f"API/Configuration error: {e}")
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
+        print(f"\n❌ Fatal error: {e}")
         sys.exit(1)
 
 
