@@ -15,3 +15,29 @@ Sistema de Machine Learning listo para predicciones de la **Major League Soccer 
 
 ```bash
 pip install -r requirements.txt
+# Generar datos de ejemplo
+python main.py --generate-sample
+
+# Predicción individual
+python main.py --home "Inter Miami CF" --away "LA Galaxy" --form-home 0.70 --form-away 0.45
+
+# Batch
+python main.py --batch fixtures.json --output predictions.json
+team,gf,ga,matches,xg
+Inter Miami CF,62,38,28,58.2
+LA Galaxy,58,42,28,55.1
+
+---
+
+### data/sample_mls_stats.csv
+(Genera automáticamente con `python main.py --generate-sample` o copia el contenido generado por el script `create_sample_mls_csv`.)
+
+---
+
+**Instrucciones finales**  
+1. Crea un repositorio vacío en GitHub.  
+2. Copia todos los archivos arriba con la estructura exacta.  
+3. Haz push.  
+4. Ve a **Actions → MLS Ensemble Predictions → Run workflow** e introduce los equipos.  
+
+El sistema queda 100% listo para ejecutar en local y en GitHub Actions.
