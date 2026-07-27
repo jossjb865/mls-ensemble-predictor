@@ -1,0 +1,97 @@
+name: MLS Ensemble Predictions
+
+on:
+  workflow_dispatch:
+    inputs:
+      home_team:
+        description: "Home team name (exact match from data CSV)"
+        required: true
+        default: "Inter Miami CF"
+      away_team:
+        description: "Away team name"
+        required: true
+        default: "LA Galaxy"
+      form_home:
+        description: "Form home (0-1)"
+        required: false
+        default: "0.65"
+      form_away:
+        description: "Form away (0-1)"
+        required: false
+        default: "0.45"
+  schedule:
+    - cron: "0 6 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "data/**"
+      - "src/**"
+      - "main.py"
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate sample data if missing
+        run: |
+          if [ ! -f data/sample_mls_stats.csv ]; then
+            python main.py --generate-sample
+          fi
+
+      - name: Run single prediction (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          python main.py \
+            --data data/sample_mls_stats.csv \
+            --home "${{ github.event.inputs.home_team }}" \
+            --away "${{ github.event.inputs.away_team }}" \
+            --form-home ${{ github.event.inputs.form_home || '0.55' }} \
+            --form-away ${{ github.event.inputs.form_away || '0.45' }} \
+            > prediction_output.json
+
+      - name: Run default example prediction (push / schedule)
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          python main.py \
+            --data data/sample_mls_stats.csv \
+            --home "Inter Miami CF" \
+            --away "LA Galaxy" \
+            --form-home 0.70 \
+            --form-away 0.50 \
+            > prediction_output.json
+
+      - name: Show prediction result
+        run: |
+          echo "=== PREDICTION RESULT ==="
+          cat prediction_output.json
+
+      - name: Upload prediction artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mls-prediction-${{ github.run_id }}
+          path: prediction_output.json
+          retention-days: 14
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile main.py
+          python -m py_compile src/ensemble.py
+          python -m py_compile src/data_loader.py
+          python -m py_compile src/predict.py
+          echo "All modules compiled successfully"
